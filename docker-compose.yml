@@ -1,0 +1,9 @@
+services:
+  weekly-report-bot:
+    build: .
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./state.json:/app/state.json
+      - ./users.json:/app/users.json
