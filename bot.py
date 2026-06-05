@@ -212,19 +212,27 @@ def polling_loop():
     if not STATE_FILE.exists():
         print(f"[{now()}] 초기 상태 구성 중...")
         pages = get_child_pages()
-        latest = pages[-1] if pages else None
-        save_state({
-            "seen_page_ids": [p["id"] for p in pages],
-            "current_week_page_id": latest["id"] if latest else None,
-            "current_week_page_url": extract_page_url(latest) if latest else None,
-        })
-        print(f"[{now()}] 기존 페이지 {len(pages)}개 등록 완료.")
+        if pages:
+            latest = pages[-1]
+            page_url = extract_page_url(latest)
+            # 최신 페이지는 seen에서 제외해서 반드시 알림 전송
+            save_state({
+                "seen_page_ids": [p["id"] for p in pages[:-1]],
+                "current_week_page_id": latest["id"],
+                "current_week_page_url": page_url,
+            })
+            print(f"[{now()}] 최신 페이지 알림 전송: {latest['title']}")
+            send_new_page_dm(latest["title"], page_url)
+        else:
+            save_state({"seen_page_ids": [], "current_week_page_id": None, "current_week_page_url": None})
+            print(f"[{now()}] 등록된 페이지 없음")
 
     while True:
         try:
             state = load_state()
             seen_ids = set(state["seen_page_ids"])
             pages = get_child_pages()
+            # skip_week 여부와 무관하게 새 페이지면 항상 알림
             new_pages = [p for p in pages if p["id"] not in seen_ids]
 
             if new_pages:
