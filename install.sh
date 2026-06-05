@@ -7,7 +7,7 @@ PLIST_NAME="com.kakao.weekly-report-bot.plist"
 LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 
 echo "📦 패키지 설치 중..."
-pip install -r "$BOT_DIR/requirements.txt" -q
+pip3 install -r "$BOT_DIR/requirements.txt" -q
 
 echo "⚙️  .env 확인 중..."
 if [ ! -f "$BOT_DIR/.env" ]; then

@@ -8,7 +8,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/miniconda3/bin/python3</string>
+        <string>/usr/bin/python3</string>
         <string>-u</string>
         <string>/Users/carol.me/Desktop/carol_claude/weekly_report_bot/bot.py</string>
     </array>

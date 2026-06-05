@@ -18,29 +18,32 @@ import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
-from slack_sdk import WebClient
+from slack_bolt import App
+from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 load_dotenv()
 
 KST = ZoneInfo("Asia/Seoul")
 
 # ── 내 정보 ─────────────────────────────────────────────────
-MY_SLACK_USER_ID       = os.environ["MY_SLACK_USER_ID"]        # 내 Slack 유저 ID
-MY_CONFLUENCE_USERNAME = os.environ["MY_CONFLUENCE_USERNAME"]  # 내 Confluence username
+MY_SLACK_USER_ID       = os.environ["MY_SLACK_USER_ID"]
+MY_CONFLUENCE_USERNAME = os.environ["MY_CONFLUENCE_USERNAME"]
 
 # ── Confluence 설정 ──────────────────────────────────────────
 CONFLUENCE_BASE_URL  = "https://wiki.daumkakao.com"
-PARENT_PAGE_ID       = "2048313600"   # 2026 주간보고 페이지
+PARENT_PAGE_ID       = "2048313600"
 CONFLUENCE_API_TOKEN = os.environ["CONFLUENCE_API_TOKEN"]
 
 # ── Slack 설정 ───────────────────────────────────────────────
-SLACK_BOT_TOKEN      = os.environ["SLACK_BOT_TOKEN"]
-POLL_INTERVAL        = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))
+SLACK_BOT_TOKEN  = os.environ["SLACK_BOT_TOKEN"]
+SLACK_APP_TOKEN  = os.environ["SLACK_APP_TOKEN"]   # xapp-... (Socket Mode용)
+POLL_INTERVAL    = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))
 
 BASE_DIR   = Path(__file__).parent
 STATE_FILE = BASE_DIR / "state.json"
 
-client = WebClient(token=SLACK_BOT_TOKEN)
+app    = App(token=SLACK_BOT_TOKEN)
+client = app.client
 
 
 # ── 상태 관리 ────────────────────────────────────────────────
@@ -58,6 +61,10 @@ def save_state(state: dict):
 def current_week_key() -> str:
     iso = date.today().isocalendar()
     return f"{iso[0]}-W{iso[1]:02d}"
+
+
+def is_skip_week() -> bool:
+    return load_state().get("skip_week") == current_week_key()
 
 
 # ── Confluence API ────────────────────────────────────────────
@@ -106,13 +113,13 @@ def extract_page_url(page: dict) -> str:
 def send_new_page_dm(page_title: str, page_url: str):
     client.chat_postMessage(
         channel=MY_SLACK_USER_ID,
-        text="이번 주 BX디자인팀 주간 보고를 작성해 주세요.",
+        text="이번 주 BX 디자인팀 주간 보고를 작성해주세요! ⭐️",
         blocks=[
             {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"이번 주 BX디자인팀 주간 보고를 작성해 주세요.\n📄 *{page_title}*",
+                    "text": f"이번 주 BX 디자인팀 주간 보고를 작성해주세요! ⭐️\n📄 *{page_title}*",
                 },
             },
             {
@@ -124,7 +131,13 @@ def send_new_page_dm(page_title: str, page_url: str):
                         "url": page_url,
                         "style": "primary",
                         "action_id": "go_write",
-                    }
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "작성 완료"},
+                        "value": "skip_week",
+                        "action_id": "skip_week",
+                    },
                 ],
             },
         ],
@@ -152,8 +165,42 @@ def send_friday_reminder(page_title: str, page_url: str):
                         "url": page_url,
                         "style": "primary",
                         "action_id": "go_write",
-                    }
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "이번 주 알림 끄기"},
+                        "value": "skip_week",
+                        "action_id": "skip_week",
+                    },
                 ],
+            },
+        ],
+    )
+
+
+# ── Slack 액션 핸들러 ─────────────────────────────────────────
+
+@app.action("skip_week")
+def handle_skip_week(ack, body, client):
+    ack()
+    state = load_state()
+    state["skip_week"] = current_week_key()
+    save_state(state)
+    print(f"[{now()}] 이번 주 알림 끄기 설정 완료 ({current_week_key()})")
+
+    # 메시지에서 버튼 제거하고 완료 상태 표시
+    channel = body["channel"]["id"]
+    ts = body["message"]["ts"]
+    section_block = body["message"].get("blocks", [{}])[0]
+    client.chat_update(
+        channel=channel,
+        ts=ts,
+        text=body["message"].get("text", ""),
+        blocks=[
+            section_block,
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": "✅ 이번 주 알림이 꺼졌습니다."}],
             },
         ],
     )
@@ -205,6 +252,10 @@ def polling_loop():
 # ── 금요일 리마인더 ───────────────────────────────────────────
 
 def friday_reminder_job():
+    if is_skip_week():
+        print(f"[{now()}] 리마인더 스킵: 이번 주 알림 끄기 설정됨")
+        return
+
     state = load_state()
     page_id  = state.get("current_week_page_id")
     page_url = state.get("current_week_page_url")
@@ -221,7 +272,6 @@ def friday_reminder_job():
     except Exception as e:
         print(f"[{now()}] 기여자 조회 실패: {e}", file=sys.stderr)
 
-    # 페이지 제목
     try:
         r = requests.get(
             f"{CONFLUENCE_BASE_URL}/rest/api/content/{page_id}",
@@ -244,7 +294,7 @@ def now() -> str:
 # ── 진입점 ───────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print(f"주간보고 알림 봇 시작")
+    print("주간보고 알림 봇 시작")
     print(f"Slack 유저: {MY_SLACK_USER_ID} | Confluence: {MY_CONFLUENCE_USERNAME}")
 
     threading.Thread(target=polling_loop, daemon=True).start()
@@ -255,10 +305,7 @@ if __name__ == "__main__":
         CronTrigger(day_of_week="fri", hour=11, minute=0, timezone=KST),
     )
     scheduler.start()
+
     print("⚡️ 봇 실행 중 (종료: Ctrl+C)")
 
-    try:
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
-        print("봇 종료")
+    SocketModeHandler(app, SLACK_APP_TOKEN).start()
