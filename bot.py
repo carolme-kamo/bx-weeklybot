@@ -103,9 +103,29 @@ def get_page_contributors(page_id: str) -> set[str]:
     return {u.get("username", "") for u in users if u.get("username")}
 
 
+def get_child_pages_of(page_id: str) -> list[dict]:
+    r = requests.get(
+        f"{CONFLUENCE_BASE_URL}/rest/api/content/{page_id}/child/page",
+        headers=cf_headers(),
+        params={"limit": 50},
+        timeout=15,
+    )
+    if not r.ok:
+        return []
+    return r.json().get("results", [])
+
+
 def extract_page_url(page: dict) -> str:
     webui = page.get("_links", {}).get("webui", f"/spaces/BXD/pages/{page['id']}")
     return CONFLUENCE_BASE_URL + webui
+
+
+def resolve_target_url(page: dict) -> str:
+    """세부 페이지가 있으면 그 링크, 없으면 본 페이지 링크 반환"""
+    children = get_child_pages_of(page["id"])
+    if children:
+        return extract_page_url(children[-1])
+    return extract_page_url(page)
 
 
 # ── Slack 메시지 ──────────────────────────────────────────────
@@ -214,15 +234,15 @@ def polling_loop():
         pages = get_child_pages()
         if pages:
             latest = pages[-1]
-            page_url = extract_page_url(latest)
-            # 최신 페이지는 seen에서 제외해서 반드시 알림 전송
+            page_url = resolve_target_url(latest)
+            print(f"[{now()}] 최신 페이지 알림 전송: {latest['title']}")
+            send_new_page_dm(latest["title"], page_url)
+            # 알림 전송 후 seen에 추가 (중복 알림 방지)
             save_state({
-                "seen_page_ids": [p["id"] for p in pages[:-1]],
+                "seen_page_ids": [p["id"] for p in pages],
                 "current_week_page_id": latest["id"],
                 "current_week_page_url": page_url,
             })
-            print(f"[{now()}] 최신 페이지 알림 전송: {latest['title']}")
-            send_new_page_dm(latest["title"], page_url)
         else:
             save_state({"seen_page_ids": [], "current_week_page_id": None, "current_week_page_url": None})
             print(f"[{now()}] 등록된 페이지 없음")
@@ -237,14 +257,14 @@ def polling_loop():
 
             if new_pages:
                 for page in new_pages:
-                    page_url = extract_page_url(page)
+                    page_url = resolve_target_url(page)
                     print(f"[{now()}] 새 페이지 감지: {page['title']}")
                     send_new_page_dm(page["title"], page_url)
                     seen_ids.add(page["id"])
 
                 latest = new_pages[-1]
                 state["current_week_page_id"] = latest["id"]
-                state["current_week_page_url"] = extract_page_url(latest)
+                state["current_week_page_url"] = resolve_target_url(latest)
             else:
                 print(f"[{now()}] 새 페이지 없음")
 
